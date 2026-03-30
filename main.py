@@ -1,78 +1,70 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 import os
 import sqlite3
 import datetime
 import asyncio
 
-# --- ตั้งค่า Bot ---
+# --- ดึงค่าจาก Railway Environment Variables ---
 TOKEN = os.getenv('BOT_TOKEN')
-intents = discord.Intents.all()
-bot = commands.Bot(command_command_prefix="!", intents=intents)
+ID_BIRTHDAY_CH = int(os.getenv('ID_BIRTHDAY_CH', 0))
+ID_WAITING_ROOM = int(os.getenv('ID_WAITING_ROOM', 0))
+ID_ADMIN_ROOM = int(os.getenv('ID_ADMIN_ROOM', 0))
+ID_SLIP_CHANNEL = int(os.getenv('ID_SLIP_CHANNEL', 0))
+ID_HISTORY_CHANNEL = int(os.getenv('ID_HISTORY_CHANNEL', 0))
+ROLE_ADMIN_NAME = os.getenv('ROLE_ADMIN_NAME', 'Admin')
+ROLE_VIP_NAME = os.getenv('ROLE_VIP_NAME', 'Vip')
 
-# --- เชื่อมต่อ Database ---
+# --- ตั้งค่า Bot ---
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# --- Database Setup ---
 conn = sqlite3.connect('database.db')
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS birthdays (user_id INTEGER PRIMARY KEY, birthday TEXT)''')
 conn.commit()
 
-# --- 1. ระบบวันเกิด (Birthday Modal & Task) ---
+# --- 1. ระบบวันเกิด ---
 class BirthdayModal(discord.ui.Modal, title="ลงทะเบียนวันเกิด"):
     date_input = discord.ui.TextInput(label="วัน/เดือน/ค.ศ. (เช่น 25/12/2000)", placeholder="DD/MM/YYYY")
-
     async def on_submit(self, interaction: discord.Interaction):
         c.execute("REPLACE INTO birthdays (user_id, birthday) VALUES (?, ?)", (interaction.user.id, self.date_input.value))
         conn.commit()
-        await interaction.response.send_message(f"ลงทะเบียนวันเกิดเรียบร้อย: {self.date_input.value}", ephemeral=True)
+        await interaction.response.send_message(f"บันทึกวันเกิดเรียบร้อย: {self.date_input.value}", ephemeral=True)
 
 @tasks.loop(hours=24)
 async def check_birthdays():
     now = datetime.datetime.now().strftime("%d/%m")
     c.execute("SELECT user_id FROM birthdays WHERE birthday LIKE ?", (f"{now}%",))
     users = c.fetchall()
-    channel = bot.get_channel(1234567890) # **แก้ไข: ใส่ ID ห้องแจ้งเตือนวันเกิด**
+    channel = bot.get_channel(ID_BIRTHDAY_CH)
     if channel:
         for user_id in users:
-            member = await channel.guild.fetch_member(user_id[0])
-            if member:
-                await channel.send(f"🎂 สุขสันต์วันเกิดนะ {member.mention}! ขอให้มีความสุขมากๆ ครับ 🎉")
+            try:
+                member = await channel.guild.fetch_member(user_id[0])
+                await channel.send(f"🎂 สุขสันต์วันเกิดนะ {member.mention}! ขอให้มีความสุขมากๆ 🎉")
+            except: continue
 
-# --- 2. ระบบติดต่อแอดมิน (Admin Sync Voice) ---
-# ระบบนี้จะทำงานอัตโนมัติผ่าน Event on_voice_state_update
-ID_WAITING_ROOM = 11111111  # **แก้ไข: ใส่ ID ห้องรอแอดมิน**
-ID_ADMIN_ROOM = 22222222    # **แก้ไข: ใส่ ID ห้องติดต่อแอดมิน**
-ROLE_ADMIN_NAME = "Admin"   # **แก้ไข: ชื่อยศแอดมิน**
-
+# --- 2. ระบบดึงเข้าห้องเสียงแอดมิน ---
 @bot.event
 async def on_voice_state_update(member, before, after):
     admin_room = bot.get_channel(ID_ADMIN_ROOM)
     waiting_room = bot.get_channel(ID_WAITING_ROOM)
-    
-    # เมื่อแอดมินเข้าห้องติดต่อแอดมิน
+    if not admin_room or not waiting_room: return
+
     if after.channel and after.channel.id == ID_ADMIN_ROOM:
         if any(role.name == ROLE_ADMIN_NAME for role in member.roles):
             for m in waiting_room.members:
                 await m.move_to(admin_room)
 
-    # เมื่อแอดมินออกจากห้องติดต่อแอดมิน
     if before.channel and before.channel.id == ID_ADMIN_ROOM:
         if any(role.name == ROLE_ADMIN_NAME for role in member.roles):
-            # เตะทุกคน (ยกเว้นแอดมินคนอื่นที่อาจยังอยู่) ออกจากห้อง
             if not any(any(r.name == ROLE_ADMIN_NAME for r in m.roles) for m in admin_room.members):
                 for m in admin_room.members:
                     await m.move_to(None)
 
-# --- 3. ระบบซื้อยศ (Shop & Slip Verification) ---
-ID_SLIP_CHANNEL = 33333333     # **แก้ไข: ID ห้องส่งสลิป**
-ID_HISTORY_CHANNEL = 44444444  # **แก้ไข: ID ห้องประวัติ**
-
-class ShopView(discord.ui.View):
-    @discord.ui.button(label="ติดต่อซื้อยศ", style=discord.ButtonStyle.primary)
-    async def buy_role(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.user.send(f"กรุณาส่งสลิปโอนเงินที่ห้อง <#{ID_SLIP_CHANNEL}> พร้อมระบุยศที่ต้องการ")
-        await interaction.response.send_message("บอทส่งรายละเอียดไปทาง DM แล้วครับ", ephemeral=True)
-
+# --- 3. ระบบซื้อยศ ---
 class VerifyView(discord.ui.View):
     def __init__(self, buyer_id):
         super().__init__(timeout=None)
@@ -80,72 +72,51 @@ class VerifyView(discord.ui.View):
 
     @discord.ui.button(label="อนุมัติยศ", style=discord.ButtonStyle.success)
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        member = await guild.fetch_member(self.buyer_id)
-        role = discord.utils.get(guild.roles, name="Vip") # **แก้ไข: ชื่อยศที่ต้องการให้**
+        member = await interaction.guild.fetch_member(self.buyer_id)
+        role = discord.utils.get(interaction.guild.roles, name=ROLE_VIP_NAME)
         await member.add_roles(role)
-        
-        # แจ้งสมาชิก & ประวัติ
-        await member.send("✅ การซื้อยศของคุณได้รับการอนุมัติแล้ว!")
-        history_ch = bot.get_channel(ID_HISTORY_CHANNEL)
-        await history_ch.send(f"📦 ซื้อขายสำเร็จ: {member.mention} ได้รับยศ {role.name} โดย Admin {interaction.user}")
+        await member.send(f"✅ ยินดีด้วย! คุณได้รับยศ {ROLE_VIP_NAME} เรียบร้อยแล้ว")
+        await bot.get_channel(ID_HISTORY_CHANNEL).send(f"📦 {member.mention} ซื้อยศสำเร็จโดย {interaction.user}")
         await interaction.message.delete()
 
 @bot.event
 async def on_message(message):
-    if message.channel.id == ID_SLIP_CHANNEL and message.attachments:
-        if not message.author.bot:
-            view = VerifyView(message.author.id)
-            # ข้อความเห็นเฉพาะแอดมิน (ใช้วิธีส่งแล้วลบ หรือตั้ง Permission ห้องให้แอดมินเห็นคนเดียว)
-            await message.channel.send(f"🔔 สลิปจาก {message.author.mention} รอแอดมินตรวจสอบ", view=view)
+    if message.channel.id == ID_SLIP_CHANNEL and message.attachments and not message.author.bot:
+        view = VerifyView(message.author.id)
+        await message.channel.send(f"🔔 สลิปจาก {message.author.mention} (เฉพาะแอดมินที่เห็นปุ่มนี้)", view=view)
     await bot.process_commands(message)
 
-# --- 4. ระบบ AI Character (Private Room) ---
+# --- 4. ระบบ AI Character ---
 class AIConfigModal(discord.ui.Modal, title="สร้างตัวละคร AI"):
-    name = discord.ui.TextInput(label="ชื่อ AI", placeholder="ตั้งชื่อเล่นให้ AI")
-    age = discord.ui.TextInput(label="อายุ", placeholder="เช่น 18")
-    trait = discord.ui.TextInput(label="นิสัย/บุคลิก", style=discord.TextStyle.paragraph)
-
+    name = discord.ui.TextInput(label="ชื่อ AI")
+    trait = discord.ui.TextInput(label="นิสัย", style=discord.TextStyle.paragraph)
     async def on_submit(self, interaction: discord.Interaction):
-        guild = interaction.guild
         overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
-        channel = await guild.create_text_channel(f"ai-{self.name.value}", overwrites=overwrites)
-        await channel.send(f"🤖 **ตัวละคร AI ถูกสร้างแล้ว**\nชื่อ: {self.name.value}\nอายุ: {self.age.value}\nนิสัย: {self.trait.value}\n*ห้องนี้เป็นห้องส่วนตัวของคุณ*")
-        await interaction.response.send_message(f"สร้างห้องคุยกับ AI แล้วที่ {channel.mention}", ephemeral=True)
+        channel = await interaction.guild.create_text_channel(f"ai-{self.name.value}", overwrites=overwrites)
+        await channel.send(f"🤖 AI: {self.name.value} พร้อมคุยกับคุณแล้ว!\nนิสัย: {self.trait.value}")
+        await interaction.response.send_message(f"สร้างห้องแล้วที่ {channel.mention}", ephemeral=True)
 
-# --- ปุ่มกดรวม (Setup Command) ---
-class MainControlView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="ลงทะเบียนวันเกิด", style=discord.ButtonStyle.secondary)
-    async def reg_bd(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BirthdayModal())
-
-    @discord.ui.button(label="ติดต่อซื้อยศ", style=discord.ButtonStyle.success)
-    async def buy_role_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(f"กรุณาส่งสลิปที่ <#{ID_SLIP_CHANNEL}>", ephemeral=True)
-
-    @discord.ui.button(label="สร้างตัวละคร AI", style=discord.ButtonStyle.primary)
-    async def create_ai(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AIConfigModal())
+# --- เมนูหลัก ---
+class MainView(discord.ui.View):
+    def __init__(self): super().__init__(timeout=None)
+    @discord.ui.button(label="ลงทะเบียนวันเกิด", style=discord.ButtonStyle.gray)
+    async def b_day(self, itn, btn): await itn.response.send_modal(BirthdayModal())
+    @discord.ui.button(label="ติดต่อซื้อยศ", style=discord.ButtonStyle.green)
+    async def buy(self, itn, btn): await itn.response.send_message(f"ส่งสลิปที่ <#{ID_SLIP_CHANNEL}>", ephemeral=True)
+    @discord.ui.button(label="สร้างตัวละคร AI", style=discord.ButtonStyle.blurple)
+    async def ai(self, itn, btn): await itn.response.send_modal(AIConfigModal())
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup(ctx):
-    await ctx.send("=== ระบบจัดการเซิร์ฟเวอร์ ===", view=MainControlView())
+    await ctx.send("⚙️ **ระบบจัดการเซิร์ฟเวอร์**", view=MainView())
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
     check_birthdays.start()
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
-    except Exception as e:
-        print(e)
+    print(f'Online: {bot.user}')
 
 bot.run(TOKEN)
