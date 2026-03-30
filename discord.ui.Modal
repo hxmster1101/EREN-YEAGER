@@ -1,0 +1,14 @@
+# ใช้ Modal รับข้อมูล
+class BirthdayModal(discord.ui.Modal, title='ลงทะเบียนวันเกิด'):
+    date = discord.ui.TextInput(label="วันที่/เดือน/ค.ศ. (เช่น 25/12/2000)")
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # บันทึกลง Database (sqlite3)
+        save_birthday(interaction.user.id, self.date.value)
+        await interaction.response.send_message("บันทึกข้อมูลสำเร็จ!", ephemeral=True)
+
+# Loop ตรวจสอบทุกวันเวลา 00:00
+@tasks.loop(hours=24)
+async def check_birthday():
+    today = datetime.now().strftime("%d/%m")
+    # ดึงรายชื่อจาก DB ที่เกิดวันนี้ แล้วส่ง Message ไปที่ Channel ที่กำหนด
