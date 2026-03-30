@@ -1,9 +1,0 @@
-@bot.event
-async def on_voice_state_update(member, before, after):
-    admin_room = bot.get_channel(ID_ห้องติดต่อแอดมิน)
-    waiting_room = bot.get_channel(ID_ห้องรอแอดมิน)
-    
-    # ถ้าแอดมินเข้าห้องติดต่อแอดมิน
-    if after.channel == admin_room and "Admin" in [r.name for r in member.roles]:
-        for m in waiting_room.members:
-            await m.move_to(admin_room) # ย้ายสมาชิกเข้าห้องทันที
